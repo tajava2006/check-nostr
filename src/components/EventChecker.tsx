@@ -26,9 +26,17 @@ type RelayState = {
   error?: string
 }
 
+const DEFAULT_RELAYS = [
+  'wss://relay.damus.io/',
+  'wss://nos.lol/',
+  'wss://relay.nostr.band/',
+  'wss://nostr.mom/',
+  'wss://relay.primal.net',
+] as const
+
 export default function EventChecker() {
   const [eventIdInput, setEventIdInput] = useState('')
-  const [relays, setRelays] = useState<string[]>(['wss://relay.damus.io'])
+  const [relays, setRelays] = useState<string[]>([...DEFAULT_RELAYS])
   const [queryKey, setQueryKey] = useState(0) // 재조회 트리거용
   const [autoQuery, setAutoQuery] = useState(true)
 
