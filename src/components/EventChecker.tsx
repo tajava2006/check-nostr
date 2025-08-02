@@ -78,6 +78,7 @@ export default function EventChecker() {
   }
   const [profile, setProfile] = useState<Profile | null>(null)
   const [profileRelay, setProfileRelay] = useState<string | null>(null)
+  const [authorError, setAuthorError] = useState<string | null>(null)
 
   // 전체 결과 중 첫 번째로 수신한 이벤트(raw)를 별도로 보관하여 단일 위치에서 표시
   const [firstEvent, setFirstEvent] = useState<Event | null>(null)
@@ -322,7 +323,27 @@ export default function EventChecker() {
   // - NIP-65 태그에서 perm 미지정(없음)은 read/write 모두 가능으로 해석하므로 포함한다.
   // - 렌더 루프를 막기 위해 relays가 변경될 때만 setRelays를 호출하고, 불필요한 queryKey 증가는 하지 않는다.
   useEffect(() => {
-    const pk = authorHex.trim().toLowerCase().replace(/^0x/, '')
+    // 입력 파싱: hex 우선, 실패 시 npub/nprofile 디코딩 시도
+    const raw = authorHex.trim()
+    // 이전 오류 초기화
+    if (authorError) setAuthorError(null)
+
+    let pk = raw.toLowerCase().replace(/^0x/, '')
+    if (!/^[0-9a-f]{64}$/.test(pk) && raw) {
+      try {
+        const decoded = nip19.decode(raw)
+        if (decoded.type === 'npub' && typeof decoded.data === 'string') {
+          pk = decoded.data.toLowerCase()
+        } else if (decoded.type === 'nprofile' && decoded.data && typeof decoded.data === 'object' && 'pubkey' in (decoded.data as Record<string, unknown>)) {
+          pk = String((decoded.data as Record<string, unknown>).pubkey).toLowerCase()
+        } else {
+          setAuthorError(`지원하지 않는 NIP-19 타입: ${decoded.type}`)
+        }
+      } catch (e) {
+        setAuthorError(e instanceof Error ? e.message : String(e))
+      }
+    }
+
     const valid = /^[0-9a-f]{64}$/.test(pk)
     if (!valid) {
       setProfile(null)
@@ -388,12 +409,12 @@ export default function EventChecker() {
                     for (const t of ev.tags || []) {
                       const tag0 = (t[0] || '').toString().toLowerCase().trim()
                       const tag1 = (t[1] || '').toString().trim()
-                      const perm = ((t[2] || '') as string).toLowerCase().trim()
+                      const permVal = (t.length > 2 ? String(t[2]) : '').toLowerCase().trim()
                       if ((tag0 === 'r' || tag0 === 'relay') && tag1) {
                         const relayUrl = normalizeRelayUrl(tag1)
                         if (!relayUrl) continue
                         // 표준: perm 없으면 read/write 모두 허용 → 포함
-                        if (perm === '' || perm === 'write' || perm === 'w') {
+                        if (permVal === '' || permVal === 'write' || permVal === 'w') {
                           candidates.push(relayUrl)
                         }
                       }
@@ -474,18 +495,27 @@ export default function EventChecker() {
             <input
               value={authorHex}
               onChange={(e) => setAuthorHex(e.target.value)}
-              placeholder="예) 작성자 공개키(hex 64). 이벤트 지정 시 자동 채워짐"
+              placeholder="예) 작성자 공개키(hex 64, npub, nprofile). 이벤트 지정 시 자동 채워짐"
               spellCheck={false}
               style={{
                 width: '100%',
                 padding: '10px 12px',
                 fontSize: 14,
                 fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                border: /^[0-9a-f]{64}$/i.test(authorHex.trim()) || !authorHex ? '1px solid #ccc' : '1px solid #c33',
+                border:
+                  (/^[0-9a-f]{64}$/i.test(authorHex.trim())) ||
+                  (() => { try { const d = nip19.decode(authorHex.trim()); return d.type === 'npub' || d.type === 'nprofile' } catch { return !authorHex } })()
+                    ? '1px solid #ccc'
+                    : '1px solid #c33',
                 borderRadius: 8,
                 outline: 'none',
               }}
             />
+            {authorError && (
+              <div style={{ marginTop: 8, color: '#b00020', fontSize: 12, whiteSpace: 'pre-wrap' }}>
+                입력 디코딩 에러: {authorError}
+              </div>
+            )}
             {profile && (
               <div
                 style={{
