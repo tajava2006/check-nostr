@@ -321,7 +321,8 @@ export default function EventChecker() {
   // authorHex가 유효하면 프로필(kind 0)과 nip65(kind 10002) 조회
   // - SimplePool을 사용하여 현재 소스 릴레이 세트에서 교체형 이벤트의 최신값만 가져온다.
   // - NIP-65 태그에서 perm 미지정(없음)은 read/write 모두 가능으로 해석하므로 포함한다.
-  // - 렌더 루프를 막기 위해 relays가 변경될 때만 setRelays를 호출하고, 불필요한 queryKey 증가는 하지 않는다.
+  // - 렌더 루프 방지: authorHex 변경에만 반응하고 normalizedRelays 의존성을 제거한다.
+  //   (normalizedRelays를 의존성에 두면 setRelays로 인한 변경 → 재실행 → 무한 루프 위험)
   useEffect(() => {
     // 입력 파싱: hex 우선, 실패 시 npub/nprofile 디코딩 시도
     const raw = authorHex.trim()
@@ -351,9 +352,14 @@ export default function EventChecker() {
       return
     }
 
+    // 유효한 pk로 변경될 때마다: 기본 릴레이만 남기고 나머지는 제거
+    // 주의: relays를 DEFAULT로 리셋하면 normalizedRelays가 바뀌어 이 effect가 재실행될 수 있으므로,
+    // 이 effect는 authorHex에만 의존하도록 위에서 의존성 배열을 제한했다.
+    setRelays(() => DEFAULT_RELAYS.map(normalizeRelayUrl))
+
     let cancelled = false
-    // 프로필/아웃박스 조회용 릴레이 선택: 입력된 릴레이 우선, 없으면 기본 릴레이
-    const sources = normalizedRelays.length ? normalizedRelays : [...DEFAULT_RELAYS]
+    // 프로필/아웃박스 조회용 릴레이 선택: DEFAULT_RELAYS만 사용(루프 방지)
+    const sources = DEFAULT_RELAYS.map(normalizeRelayUrl)
 
     ;(async () => {
       // 1) kind 0 프로필: 최신 하나를 각 릴레이에서 시도하되, 최초 성공만 반영
@@ -393,7 +399,7 @@ export default function EventChecker() {
         // ignore
       }
 
-      // 2) kind 10002 NIP-65(아웃박스): 최신 하나 → write 가능한 릴레이들 추가
+      // 2) kind 10002 NIP-65(아웃박스): 최신 하나 → write 가능한 릴레이들만 추출하여 디폴트 뒤에 재구성
       try {
         let outboxHandled = false
         for (const url of sources) {
@@ -413,19 +419,21 @@ export default function EventChecker() {
                       if ((tag0 === 'r' || tag0 === 'relay') && tag1) {
                         const relayUrl = normalizeRelayUrl(tag1)
                         if (!relayUrl) continue
-                        // 표준: perm 없으면 read/write 모두 허용 → 포함
+                        // 표준: perm 없으면 read/write 모두 허용 → write 가능으로 간주하여 포함
                         if (permVal === '' || permVal === 'write' || permVal === 'w') {
                           candidates.push(relayUrl)
                         }
                       }
                     }
-                    if (candidates.length) {
-                      const toAdd = uniq(candidates)
-                      setRelays((prev) => {
-                        const merged = uniq([...prev, ...toAdd])
-                        return merged.length !== prev.length ? merged : prev
-                      })
-                    }
+                    const writeRelays = uniq(candidates)
+
+                    // 디폴트 릴레이 개수 이후 인덱스를 모두 제거한 뒤, 새 write 릴레이만 뒤에 붙인다.
+                    setRelays(() => {
+                      const base = DEFAULT_RELAYS.map(normalizeRelayUrl)
+                      // prev는 사용자가 중간에 수정했을 수 있으므로 무시하고, 규칙대로 항상 디폴트만 남김
+                      return uniq([...base, ...writeRelays])
+                    })
+
                     outboxHandled = true
                   }
                 },
@@ -448,7 +456,7 @@ export default function EventChecker() {
     return () => {
       cancelled = true
     }
-  }, [authorHex, normalizedRelays])
+  }, [authorHex])
 
   useEffect(() => {
     if (autoQuery) {
@@ -625,24 +633,41 @@ export default function EventChecker() {
                   : st?.status === 'closed'
                   ? '#555'
                   : '#999'
+              const isDefault = DEFAULT_RELAYS.map(normalizeRelayUrl).includes(url)
+              const isUserOutbox = !isDefault && (i >= DEFAULT_RELAYS.length)
 
               return (
                 <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 8, alignItems: 'center' }}>
-                  <input
-                    value={r}
-                    onChange={(e) => updateRelay(i, e.target.value)}
-                    placeholder="예) relay.damus.io 또는 wss://relay.damus.io"
-                    spellCheck={false}
-                    style={{
-                      width: '100%',
-                      padding: '10px 12px',
-                      fontSize: 14,
-                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                      border: '1px solid #ccc',
-                      borderRadius: 8,
-                      outline: 'none',
-                    }}
-                  />
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      value={r}
+                      onChange={(e) => updateRelay(i, e.target.value)}
+                      placeholder="예) relay.damus.io 또는 wss://relay.damus.io"
+                      spellCheck={false}
+                      style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        fontSize: 14,
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                        border: '1px solid #ccc',
+                        borderRadius: 8,
+                        outline: 'none',
+                        paddingRight: 96,
+                      }}
+                    />
+                    <div style={{ position: 'absolute', right: 8, top: 8, display: 'flex', gap: 6 }}>
+                      {isDefault && (
+                        <span style={{ fontSize: 11, background: '#eef2ff', color: '#334155', border: '1px solid #c7d2fe', borderRadius: 999, padding: '2px 6px' }}>
+                          default
+                        </span>
+                      )}
+                      {isUserOutbox && !isDefault && (
+                        <span style={{ fontSize: 11, background: '#ecfeff', color: '#155e75', border: '1px solid #a5f3fc', borderRadius: 999, padding: '2px 6px' }}>
+                          outbox
+                        </span>
+                      )}
+                    </div>
+                  </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <div
                       title={st?.status ?? 'idle'}
