@@ -54,6 +54,8 @@ type RelayState = {
   hasEvent: boolean | null
   event: Event | null
   error?: string
+  publishStatus?: 'idle' | 'publishing' | 'success' | 'failed'
+  publishError?: string
 }
 
 export default function EventChecker() {
@@ -305,6 +307,78 @@ export default function EventChecker() {
     // states는 내부적으로 확인용으로만 읽고 setStates로 갱신하므로 의존성에서 제외
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isValidId, normalizedId, normalizedRelays, queryKey])
+
+  const publishToRelay = async (relayUrl: string) => {
+    // 이벤트 ID가 유효해야 퍼블리시 가능
+    if (!isValidId || !normalizedId) return
+    const pool = poolRef.current
+    if (!pool) return
+
+    // 현재 첫 이벤트를 우선 사용, 없으면 ids 조회 이벤트를 최소 형태로 구성
+    // 퍼블리시를 위해서는 전체 이벤트 객체가 필요하므로 firstEvent가 없으면 publish 불가 처리
+    const ev = firstEvent
+    if (!ev || ev.id !== normalizedId) {
+      // 조회된 원본 이벤트가 없으면 퍼블리시 실패 처리
+      setStates((s) => ({
+        ...s,
+        [relayUrl]: {
+          ...(s[relayUrl] as RelayState),
+          publishStatus: 'failed',
+          publishError: '원본 이벤트가 없습니다. 먼저 이벤트를 조회해 주세요.',
+        },
+      }))
+      return
+    }
+
+    // 릴레이 상태 업데이트: 퍼블리싱 시작
+    setStates((s) => ({
+      ...s,
+      [relayUrl]: {
+        ...(s[relayUrl] as RelayState),
+        publishStatus: 'publishing',
+        publishError: undefined,
+      },
+    }))
+
+    try {
+      // 퍼블리시: nostr-tools Relay API 사용
+      const relay = await Relay.connect(relayUrl)
+      try {
+        await relay.publish(ev)
+        // 성공 시 상태 갱신: 해당 릴레이에 이벤트가 존재하는 것으로 마킹
+        setStates((s) => ({
+          ...s,
+          [relayUrl]: {
+            ...(s[relayUrl] as RelayState),
+            hasEvent: true,
+            event: ev,
+            publishStatus: 'success',
+            publishError: undefined,
+          },
+        }))
+      } catch (e: unknown) {
+        setStates((s) => ({
+          ...s,
+          [relayUrl]: {
+            ...(s[relayUrl] as RelayState),
+            publishStatus: 'failed',
+            publishError: e instanceof Error ? e.message : String(e),
+          },
+        }))
+      } finally {
+        try { relay.close() } catch { /* ignore */ }
+      }
+    } catch (e: unknown) {
+      setStates((s) => ({
+        ...s,
+        [relayUrl]: {
+          ...(s[relayUrl] as RelayState),
+          publishStatus: 'failed',
+          publishError: e instanceof Error ? e.message : String(e),
+        },
+      }))
+    }
+  }
 
   const addRelay = () => {
     setRelays((prev) => [...prev, ''])
@@ -655,14 +729,14 @@ export default function EventChecker() {
                         paddingRight: 96,
                       }}
                     />
-                    <div style={{ position: 'absolute', right: 8, top: 8, display: 'flex', gap: 6 }}>
+                    <div style={{ position: 'absolute', right: 8, top: 8, display: 'flex', gap: 6, pointerEvents: 'none' }}>
                       {isDefault && (
-                        <span style={{ fontSize: 11, background: '#eef2ff', color: '#334155', border: '1px solid #c7d2fe', borderRadius: 999, padding: '2px 6px' }}>
+                        <span style={{ fontSize: 11, background: '#eef2ff', color: '#334155', border: '1px solid #c7d2fe', borderRadius: 999, padding: '2px 6px', pointerEvents: 'auto' }}>
                           default
                         </span>
                       )}
                       {isUserOutbox && !isDefault && (
-                        <span style={{ fontSize: 11, background: '#ecfeff', color: '#155e75', border: '1px solid #a5f3fc', borderRadius: 999, padding: '2px 6px' }}>
+                        <span style={{ fontSize: 11, background: '#ecfeff', color: '#155e75', border: '1px solid #a5f3fc', borderRadius: 999, padding: '2px 6px', pointerEvents: 'auto' }}>
                           outbox
                         </span>
                       )}
@@ -677,8 +751,37 @@ export default function EventChecker() {
                         borderRadius: '50%',
                         background: statusColor,
                         border: '1px solid #ddd',
+                        flex: '0 0 auto'
                       }}
                     />
+                    {/* 퍼블리시 버튼: 항상 표시. 혹시 가려지는 문제 방지 위해 명시적 레이아웃 부여 */}
+                    <div style={{ flex: '0 0 auto', display: 'inline-flex' }}>
+                      <button
+                        onClick={() => publishToRelay(url)}
+                        disabled={!isValidId || (st && st.publishStatus === 'publishing')}
+                        style={{
+                          padding: '6px 10px',
+                          borderRadius: 6,
+                          border: '1px solid #ccc',
+                          background:
+                            st && st.publishStatus === 'publishing' ? '#f3f3f3' : '#fff',
+                          color: '#222',
+                          cursor:
+                            st && st.publishStatus === 'publishing' ? 'not-allowed' : 'pointer',
+                          display: 'inline-block',
+                          visibility: 'visible',
+                          zIndex: 1
+                        }}
+                        title={
+                          st && st.publishStatus === 'publishing'
+                            ? '퍼블리시 중...'
+                            : '이 이벤트를 이 릴레이에 퍼블리시'
+                        }
+                        aria-label="publish to relay"
+                      >
+                        {(st && st.publishStatus === 'publishing') ? '퍼블리시 중...' : '퍼블리시'}
+                      </button>
+                    </div>
                     <button
                       onClick={() => removeRelay(i)}
                       style={{
@@ -687,6 +790,7 @@ export default function EventChecker() {
                         border: '1px solid #ccc',
                         background: '#fff',
                         cursor: 'pointer',
+                        flex: '0 0 auto'
                       }}
                       title="삭제"
                       aria-label="remove relay"
@@ -709,6 +813,16 @@ export default function EventChecker() {
                           )}
                         </div>
                         {st.error && <div style={{ color: '#c33' }}>에러: {st.error}</div>}
+                        {st.publishStatus === 'failed' && st.publishError && (
+                          <div style={{ color: '#c33' }}>
+                            퍼블리시 실패: {st.publishError}
+                          </div>
+                        )}
+                        {st.publishStatus === 'success' && (
+                          <div style={{ color: '#1a7f37' }}>
+                            퍼블리시 성공
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
