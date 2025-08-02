@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Relay, type Event, type Filter, SimplePool, nip19 } from 'nostr-tools'
 
-// 유틸
+/* Utils */
 function isHex32(s: string): boolean {
   const v = s.trim().toLowerCase().replace(/^0x/, '')
   return /^[0-9a-f]{64}$/.test(v)
@@ -12,15 +12,15 @@ function normalizeId(s: string): string {
 function normalizeRelayUrl(url: string): string {
   let u = url.trim()
   if (!u) return ''
-  // nostr-tools 이벤트 태그에 스킴/슬래시가 부족한 경우를 보정
+  // Normalize relay URL (ensure scheme and remove trailing slashes)
   if (!/^wss?:\/\//i.test(u)) u = `wss://${u}`
   try {
     const parsed = new URL(u)
-    // trailing slash 제거 및 소문자 호스트 정규화
+    // Remove trailing slash and normalize host
     parsed.pathname = parsed.pathname.replace(/\/+$/, '')
     return `${parsed.protocol}//${parsed.host}${parsed.pathname || ''}`
   } catch {
-    // URL 파싱 실패 시 기본 치환만 적용
+    // Fallback if URL parsing fails
     return u.replace(/\/+$/, '')
   }
 }
@@ -61,11 +61,11 @@ type RelayState = {
 export default function EventChecker() {
   const [eventIdInput, setEventIdInput] = useState('')
   const [relays, setRelays] = useState<string[]>([...DEFAULT_RELAYS])
-  const [queryKey, setQueryKey] = useState(0) // 재조회 트리거용
+  const [queryKey, setQueryKey] = useState(0) // re-query trigger
   const [autoQuery, setAutoQuery] = useState(true)
 
-  // author/pubkey 및 프로필 상태
-  const [authorHex, setAuthorHex] = useState<string>('') // 자동 채움 후 사용자가 수정 가능
+  // author/pubkey and profile state
+  const [authorHex, setAuthorHex] = useState<string>('') // auto-filled from event, editable by user
   type Profile = {
     pubkey: string
     name?: string
@@ -82,21 +82,21 @@ export default function EventChecker() {
   const [profileRelay, setProfileRelay] = useState<string | null>(null)
   const [authorError, setAuthorError] = useState<string | null>(null)
 
-  // 전체 결과 중 첫 번째로 수신한 이벤트(raw)를 별도로 보관하여 단일 위치에서 표시
+  // Keep the first received raw event to show once at the bottom
   const [firstEvent, setFirstEvent] = useState<Event | null>(null)
 
-  // 상태 맵
+  // per-relay state map
   const [states, setStates] = useState<Record<string, RelayState>>({})
   const poolRef = useRef<SimplePool | null>(null)
 
-  // 입력이 hex 64이거나 NIP-19(nevent/npub/nprofile/naddr 등)이면 id를 추출
+  // If input is hex 64 or a NIP-19 (nevent/note), extract the event id
   const normalizedId = useMemo(() => {
     const raw = eventIdInput.trim()
     if (!raw) return ''
-    // 1) hex 64 바로 허용
+    // 1) accept hex 64 directly
     const hex = normalizeId(raw)
     if (isHex32(hex)) return hex
-    // 2) NIP-19 디코딩 시도
+    // 2) try to decode NIP-19
     try {
       const { type, data } = nip19.decode(raw)
       // nevent: { id, author?, relays?, kind? }
@@ -109,13 +109,12 @@ export default function EventChecker() {
         const id = String((data as Record<string, unknown>).id)
         return normalizeId(id)
       }
-      // note: 이벤트 id 직접 인코딩된 케이스
+      // note: event id directly encoded
       if (type === 'note' && typeof data === 'string') {
         return normalizeId(data)
       }
-      // naddr는 식별자가 event id와는 다르므로 여기서는 조회 대상이 아님(확장 시 kind/tag 기반 조회 가능)
-      // nnote는 일부 툴에서 쓰는 별칭일 수 있어 note가 아니면 통과
-      // 그 외 타입은 여기서는 사용하지 않음
+      // naddr is not the same as an event id; ignored here
+      // other types are not used in this view
     } catch {
       // 디코드 실패 시 무시
     }
@@ -128,19 +127,19 @@ export default function EventChecker() {
     [relays],
   )
 
-  // 이벤트 변경 시 author 초기화(입력에 의해 덮어쓸 수 있음)
+  // When event changes, reset author/profile/firstEvent
   useEffect(() => {
-    // 이벤트가 지워졌다면 author도 리셋
+    // clear author if event id was cleared
     if (!normalizedId) {
       setAuthorHex('')
       setProfile(null)
       setProfileRelay(null)
     }
-    // 이벤트가 바뀌면 단일 raw 이벤트도 초기화
+    // reset firstEvent on id change
     setFirstEvent(null)
   }, [normalizedId])
 
-  // Pool 라이프사이클
+  // SimplePool lifecycle
   useEffect(() => {
     const pool = new SimplePool()
     poolRef.current = pool
@@ -153,12 +152,9 @@ export default function EventChecker() {
       poolRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []) // 최초 1회
+  }, []) // mount only
 
-  // 상태 초기화
-  // - 기존 결과는 최대한 보존한다(이미 조회 완료된 릴레이의 결과가 새 릴레이 추가/수정으로 사라지지 않도록 함).
-  // - 새로 추가된 릴레이만 기본 상태로 추가.
-  // - 이벤트(ID)가 바뀌면 모든 릴레이의 결과를 초기화하여 새 이벤트 기준으로 재조회되도록 함.
+  // Initialize states for new relays and remove for deleted ones
   useEffect(() => {
     setStates((prev) => {
       const next: Record<string, RelayState> = { ...prev }
@@ -173,7 +169,7 @@ export default function EventChecker() {
           }
         }
       }
-      // 입력에서 제거된 릴레이는 상태에서도 제거
+      // remove state entries for relays no longer in the list
       for (const key of Object.keys(next)) {
         if (!normalizedRelays.includes(key)) {
           delete next[key]
@@ -183,7 +179,7 @@ export default function EventChecker() {
     })
   }, [normalizedRelays])
 
-  // 이벤트가 바뀌면 기존 각 릴레이의 조회 결과를 초기화하고 재조회 트리거
+  // When event id changes, reset per-relay results and trigger re-query
   useEffect(() => {
     setStates(() => {
       const next: Record<string, RelayState> = {}
@@ -198,12 +194,12 @@ export default function EventChecker() {
       }
       return next
     })
-    // 유효한 id면 자동으로 재조회 트리거(수동 조회만 원하면 아래 줄 제거 가능)
+    // auto-trigger re-query if id is valid (remove if you want manual)
     setQueryKey((k) => k + 1)
   }, [normalizedId])
 
-  // 개별 릴레이 연결 상태 추적 + 이벤트 조회(단발성)
-  // - 이미 결과가 확정된 릴레이(connected+hasEvent !== null)는 다시 조회하지 않음(기존 표시 유지).
+  // Connect to each relay and query the event once
+  // - Do not re-query if the result is already finalized
   useEffect(() => {
     if (!poolRef.current) return
     if (!isValidId || normalizedRelays.length === 0) return
@@ -216,11 +212,11 @@ export default function EventChecker() {
       const alreadyDone =
         st && (st.hasEvent !== null || st.status === 'error' || st.status === 'closed')
       if (alreadyDone) {
-        // 이미 조회가 끝난 릴레이는 스킵하여 기존 raw 데이터가 사라지지 않게 함
+        // skip done relays to preserve previous raw data
         return
       }
 
-      // 조회 시작
+      // mark as connecting
       setStates((s) => ({
         ...s,
         [relayUrl]: {
@@ -245,7 +241,7 @@ export default function EventChecker() {
             [relayUrl]: { ...(s[relayUrl] as RelayState), status: 'open' },
           }))
 
-          // 이벤트 조회: 단발(subscribe 후 EOSE 또는 첫 이벤트 수신 시 즉시 종료)
+          // one-shot query: close on first event or EOSE
           const filter: Filter = { ids: [targetId] }
           let done = false
 
@@ -258,9 +254,9 @@ export default function EventChecker() {
                   ...s,
                   [relayUrl]: { ...(s[relayUrl] as RelayState), hasEvent: true, event: ev },
                 }))
-                // 전체 중 첫 번째로 수신한 이벤트를 보관하여 상단에 단 한 번만 표시
+                // store the first received event globally (shown once)
                 setFirstEvent((prev) => prev ?? ev)
-                // 이벤트 author를 자동 세팅(이미 사용자가 직접 입력했다면 유지)
+                // auto-fill author pubkey if user has not set it
                 setAuthorHex((prev) => prev || ev.pubkey)
                 try { sub.close() } catch { /* ignore */ }
                 try { relay!.close() } catch { /* ignore */ }
@@ -292,7 +288,7 @@ export default function EventChecker() {
               ...(s[relayUrl] ?? { url: relayUrl, normalized: relayUrl } as RelayState),
               status: 'error',
               error: e instanceof Error ? e.message : String(e),
-              // 에러 시 이전 성공 데이터가 있었다면 보존, 없었다면 null 유지
+              // preserve previous successful data if any
               hasEvent: s[relayUrl]?.hasEvent ?? null,
               event: s[relayUrl]?.event ?? null,
             },
@@ -304,21 +300,20 @@ export default function EventChecker() {
     return () => {
       aborters.forEach((fn) => fn())
     }
-    // states는 내부적으로 확인용으로만 읽고 setStates로 갱신하므로 의존성에서 제외
+    // exclude 'states' from deps; we update via setStates closures
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isValidId, normalizedId, normalizedRelays, queryKey])
 
   const publishToRelay = async (relayUrl: string) => {
-    // 이벤트 ID가 유효해야 퍼블리시 가능
+    // Event id must be valid
     if (!isValidId || !normalizedId) return
     const pool = poolRef.current
     if (!pool) return
 
-    // 현재 첫 이벤트를 우선 사용, 없으면 ids 조회 이벤트를 최소 형태로 구성
-    // 퍼블리시를 위해서는 전체 이벤트 객체가 필요하므로 firstEvent가 없으면 publish 불가 처리
+    // We need the full event object to publish; if missing, fail gracefully
     const ev = firstEvent
     if (!ev || ev.id !== normalizedId) {
-      // 조회된 원본 이벤트가 없으면 퍼블리시 실패 처리
+      // No original event available
       setStates((s) => ({
         ...s,
         [relayUrl]: {
@@ -330,7 +325,7 @@ export default function EventChecker() {
       return
     }
 
-    // 릴레이 상태 업데이트: 퍼블리싱 시작
+    // mark publishing
     setStates((s) => ({
       ...s,
       [relayUrl]: {
@@ -341,11 +336,11 @@ export default function EventChecker() {
     }))
 
     try {
-      // 퍼블리시: nostr-tools Relay API 사용
+      // Publish using nostr-tools Relay API
       const relay = await Relay.connect(relayUrl)
       try {
         await relay.publish(ev)
-        // 성공 시 상태 갱신: 해당 릴레이에 이벤트가 존재하는 것으로 마킹
+        // On success, mark as found and keep the event
         setStates((s) => ({
           ...s,
           [relayUrl]: {
@@ -392,15 +387,13 @@ export default function EventChecker() {
 
   const triggerQuery = () => setQueryKey((k) => k + 1)
 
-  // authorHex가 유효하면 프로필(kind 0)과 nip65(kind 10002) 조회
-  // - SimplePool을 사용하여 현재 소스 릴레이 세트에서 교체형 이벤트의 최신값만 가져온다.
-  // - NIP-65 태그에서 perm 미지정(없음)은 read/write 모두 가능으로 해석하므로 포함한다.
-  // - 렌더 루프 방지: authorHex 변경에만 반응하고 normalizedRelays 의존성을 제거한다.
-  //   (normalizedRelays를 의존성에 두면 setRelays로 인한 변경 → 재실행 → 무한 루프 위험)
+  // When authorHex is valid, query profile (kind 0) and outbox relays (kind 10002)
+  // - Use DEFAULT_RELAYS to avoid render loops
+  // - NIP-65: no perm implies read/write; include as write-capable
   useEffect(() => {
-    // 입력 파싱: hex 우선, 실패 시 npub/nprofile 디코딩 시도
+    // Parse author: try hex, then npub/nprofile
     const raw = authorHex.trim()
-    // 이전 오류 초기화
+    // reset previous decode errors
     if (authorError) setAuthorError(null)
 
     let pk = raw.toLowerCase().replace(/^0x/, '')
@@ -412,7 +405,7 @@ export default function EventChecker() {
         } else if (decoded.type === 'nprofile' && decoded.data && typeof decoded.data === 'object' && 'pubkey' in (decoded.data as Record<string, unknown>)) {
           pk = String((decoded.data as Record<string, unknown>).pubkey).toLowerCase()
         } else {
-          setAuthorError(`지원하지 않는 NIP-19 타입: ${decoded.type}`)
+          setAuthorError(`Unsupported NIP-19 type: ${decoded.type}`)
         }
       } catch (e) {
         setAuthorError(e instanceof Error ? e.message : String(e))
@@ -426,17 +419,16 @@ export default function EventChecker() {
       return
     }
 
-    // 유효한 pk로 변경될 때마다: 기본 릴레이만 남기고 나머지는 제거
-    // 주의: relays를 DEFAULT로 리셋하면 normalizedRelays가 바뀌어 이 effect가 재실행될 수 있으므로,
-    // 이 effect는 authorHex에만 의존하도록 위에서 의존성 배열을 제한했다.
+    // On valid pk change: keep only default relays
+    // This effect depends only on authorHex to avoid re-run loops
     setRelays(() => DEFAULT_RELAYS.map(normalizeRelayUrl))
 
     let cancelled = false
-    // 프로필/아웃박스 조회용 릴레이 선택: DEFAULT_RELAYS만 사용(루프 방지)
+    // Use DEFAULT_RELAYS as sources (avoid loops)
     const sources = DEFAULT_RELAYS.map(normalizeRelayUrl)
 
     ;(async () => {
-      // 1) kind 0 프로필: 최신 하나를 각 릴레이에서 시도하되, 최초 성공만 반영
+      // 1) kind 0 profile: try each relay; accept first success
       try {
         let profileSet = false
         for (const url of sources) {
@@ -473,7 +465,7 @@ export default function EventChecker() {
         // ignore
       }
 
-      // 2) kind 10002 NIP-65(아웃박스): 최신 하나 → write 가능한 릴레이들만 추출하여 디폴트 뒤에 재구성
+      // 2) kind 10002 NIP-65(outbox): extract write-capable relays and append after defaults
       try {
         let outboxHandled = false
         for (const url of sources) {
@@ -493,7 +485,7 @@ export default function EventChecker() {
                       if ((tag0 === 'r' || tag0 === 'relay') && tag1) {
                         const relayUrl = normalizeRelayUrl(tag1)
                         if (!relayUrl) continue
-                        // 표준: perm 없으면 read/write 모두 허용 → write 가능으로 간주하여 포함
+                        // Standard: missing perm means read/write allowed → treat as write-capable
                         if (permVal === '' || permVal === 'write' || permVal === 'w') {
                           candidates.push(relayUrl)
                         }
@@ -501,10 +493,10 @@ export default function EventChecker() {
                     }
                     const writeRelays = uniq(candidates)
 
-                    // 디폴트 릴레이 개수 이후 인덱스를 모두 제거한 뒤, 새 write 릴레이만 뒤에 붙인다.
+                    // Keep defaults and append unique write relays
                     setRelays(() => {
                       const base = DEFAULT_RELAYS.map(normalizeRelayUrl)
-                      // prev는 사용자가 중간에 수정했을 수 있으므로 무시하고, 규칙대로 항상 디폴트만 남김
+                      // Ignore prev user edits; keep a stable default-first policy
                       return uniq([...base, ...writeRelays])
                     })
 
@@ -545,18 +537,18 @@ export default function EventChecker() {
 
   return (
     <div style={{ maxWidth: 1000, margin: '40px auto', padding: '0 16px' }}>
-      <h2 style={{ marginTop: 0 }}>릴레이 이벤트 체크</h2>
+      <h2 style={{ marginTop: 0 }}>Relay Event Check</h2>
       <p style={{ color: '#666' }}>
-        왼쪽에 이벤트 id(hex 64)를 입력하고, 오른쪽에 하나 이상의 릴레이 주소를 입력하세요. 각 릴레이의 연결 상태와 이벤트 존재 여부 및 raw JSON을 표시합니다.
+        Enter an event id (hex 64) on the left, and one or more relay URLs on the right. The app shows connection status, existence of the event, and raw JSON per relay.
       </p>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <div>
-          <div style={{ marginBottom: 8, color: '#444' }}>이벤트 ID (hex 64 또는 nevent/note)</div>
+          <div style={{ marginBottom: 8, color: '#444' }}>Event ID (hex 64 or nevent/note)</div>
           <input
             value={eventIdInput}
             onChange={(e) => setEventIdInput(e.target.value)}
-            placeholder="예) e3a1... 또는 nevent1..."
+            placeholder="e.g. e3a1... or nevent1..."
             spellCheck={false}
             style={{
               width: '100%',
@@ -569,15 +561,15 @@ export default function EventChecker() {
             }}
           />
           {!isValidId && eventIdInput && (
-            <div style={{ color: '#c33', marginTop: 6 }}>유효한 이벤트 ID가 아닙니다.</div>
+            <div style={{ color: '#c33', marginTop: 6 }}>Invalid event ID.</div>
           )}
 
           <div style={{ marginTop: 12 }}>
-            <div style={{ marginBottom: 6, color: '#444' }}>작성자(pubkey, hex 64)</div>
+            <div style={{ marginBottom: 6, color: '#444' }}>Author (pubkey, hex 64)</div>
             <input
               value={authorHex}
               onChange={(e) => setAuthorHex(e.target.value)}
-              placeholder="예) 작성자 공개키(hex 64, npub, nprofile). 이벤트 지정 시 자동 채워짐"
+              placeholder="e.g. author pubkey (hex 64, npub, nprofile). Auto-filled when an event is specified."
               spellCheck={false}
               style={{
                 width: '100%',
@@ -595,7 +587,7 @@ export default function EventChecker() {
             />
             {authorError && (
               <div style={{ marginTop: 8, color: '#b00020', fontSize: 12, whiteSpace: 'pre-wrap' }}>
-                입력 디코딩 에러: {authorError}
+                Input decoding error: {authorError}
               </div>
             )}
             {profile && (
@@ -655,7 +647,7 @@ export default function EventChecker() {
                   checked={autoQuery}
                   onChange={(e) => setAutoQuery(e.target.checked)}
                 />
-                자동 조회
+                Auto query
               </label>
               <button
                 onClick={triggerQuery}
@@ -668,7 +660,7 @@ export default function EventChecker() {
                   cursor: isValidId ? 'pointer' : 'not-allowed',
                 }}
               >
-                조회
+                Query
               </button>
             </div>
           </div>
@@ -676,7 +668,7 @@ export default function EventChecker() {
 
         <div>
           <div style={{ marginBottom: 8, color: '#444', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            릴레이 주소들
+            Relay URLs
             <button
               onClick={addRelay}
               style={{
@@ -687,7 +679,7 @@ export default function EventChecker() {
                 cursor: 'pointer',
               }}
               aria-label="add relay"
-              title="릴레이 추가"
+              title="Add relay"
             >
               ＋
             </button>
@@ -716,7 +708,7 @@ export default function EventChecker() {
                     <input
                       value={r}
                       onChange={(e) => updateRelay(i, e.target.value)}
-                      placeholder="예) relay.damus.io 또는 wss://relay.damus.io"
+                      placeholder="e.g. relay.damus.io or wss://relay.damus.io"
                       spellCheck={false}
                       style={{
                         width: '100%',
@@ -754,7 +746,7 @@ export default function EventChecker() {
                         flex: '0 0 auto'
                       }}
                     />
-                    {/* 퍼블리시 버튼: 항상 표시. 혹시 가려지는 문제 방지 위해 명시적 레이아웃 부여 */}
+                    {/* Publish button: always visible. Explicit layout to avoid being covered by badges */}
                     <div style={{ flex: '0 0 auto', display: 'inline-flex' }}>
                       <button
                         onClick={() => publishToRelay(url)}
@@ -782,12 +774,12 @@ export default function EventChecker() {
                         }}
                         title={
                           st && (st.publishStatus === 'publishing' || st.hasEvent === true)
-                            ? (st.hasEvent === true ? '이미 존재함' : '퍼블리시 중...')
-                            : '이 이벤트를 이 릴레이에 퍼블리시'
+                            ? (st.hasEvent === true ? 'Already exists' : 'Publishing...')
+                            : 'Publish this event to this relay'
                         }
                         aria-label="publish to relay"
                       >
-                        {st && st.publishStatus === 'publishing' ? '퍼블리시 중...' : '퍼블리시'}
+                        {st && st.publishStatus === 'publishing' ? 'Publishing...' : 'Publish'}
                       </button>
                     </div>
                     <button
@@ -800,7 +792,7 @@ export default function EventChecker() {
                         cursor: 'pointer',
                         flex: '0 0 auto'
                       }}
-                      title="삭제"
+                      title="Remove"
                       aria-label="remove relay"
                     >
                       ×
@@ -811,24 +803,24 @@ export default function EventChecker() {
                     <div style={{ gridColumn: '1 / span 2' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 6, color: '#444' }}>
                         <div>
-                          존재 여부:{' '}
+                          Existence:{' '}
                           {st.hasEvent == null ? (
-                            <span style={{ color: '#666' }}>확인 중/미확인</span>
+                            <span style={{ color: '#666' }}>Checking/Unknown</span>
                           ) : st.hasEvent ? (
-                            <span style={{ color: '#1a7f37' }}>있음</span>
+                            <span style={{ color: '#1a7f37' }}>Present</span>
                           ) : (
-                            <span style={{ color: '#c33' }}>없음</span>
+                            <span style={{ color: '#c33' }}>Absent</span>
                           )}
                         </div>
-                        {st.error && <div style={{ color: '#c33' }}>에러: {st.error}</div>}
+                        {st.error && <div style={{ color: '#c33' }}>Error: {st.error}</div>}
                         {st.publishStatus === 'failed' && st.publishError && (
                           <div style={{ color: '#c33' }}>
-                            퍼블리시 실패: {st.publishError}
+                            Publish failed: {st.publishError}
                           </div>
                         )}
                         {st.publishStatus === 'success' && (
                           <div style={{ color: '#1a7f37' }}>
-                            퍼블리시 성공
+                            Publish succeeded
                           </div>
                         )}
                       </div>
@@ -841,7 +833,7 @@ export default function EventChecker() {
         </div>
       </div>
 
-      {/* 단일 Raw Event 표시(첫 수신 이벤트) */}
+      {/* Single raw event (first received) */}
       {firstEvent && (
         <div
           style={{

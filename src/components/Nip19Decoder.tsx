@@ -8,7 +8,7 @@ type DecodeResult =
 function decodeNip19(input: string): DecodeResult {
   try {
     const trimmed = input.trim()
-    if (!trimmed) return { ok: false, error: '값을 입력하세요.' }
+    if (!trimmed) return { ok: false, error: 'Please enter a value.' }
 
     const { type, data } = nip19.decode(trimmed)
 
@@ -32,14 +32,14 @@ function decodeNip19(input: string): DecodeResult {
       if (type === 'nevent' && typeof v === 'object' && v && 'id' in (v as Record<string, unknown>)) {
         return String((v as Record<string, unknown>).id).toLowerCase()
       }
-      throw new Error('이 타입의 원본 hex를 해석할 수 없습니다.')
+      throw new Error('Cannot decode original hex for this type.')
     }
 
     const hex = toHex(data)
     return { ok: true, type, hex }
   } catch (e: unknown) {
     const msg =
-      e instanceof Error ? e.message : typeof e === 'string' ? e : '디코딩 중 오류가 발생했습니다.'
+      e instanceof Error ? e.message : typeof e === 'string' ? e : 'An error occurred while decoding.'
     return { ok: false, error: String(msg) }
   }
 }
@@ -52,13 +52,13 @@ export default function Nip19Decoder() {
     <div style={{ maxWidth: 720, margin: '40px auto', padding: '0 16px' }}>
       <h2 style={{ marginTop: 0 }}>NIP-19 Decoder</h2>
       <p style={{ color: '#666' }}>
-        NIP-19 bech32(npub/nsec/note/nprofile/nevent 등)를 입력하면 원본 hex를 표시합니다.
+        Enter a NIP-19 bech32 (npub/nsec/note/nprofile/nevent, etc.) to see the original hex.
       </p>
 
       <input
         value={input}
         onChange={(e) => setInput(e.target.value)}
-        placeholder="예) npub1..."
+        placeholder="e.g. npub1..."
         spellCheck={false}
         style={{
           width: '100%',
@@ -73,7 +73,7 @@ export default function Nip19Decoder() {
 
       <div style={{ marginTop: 20 }}>
         {!input ? (
-          <div style={{ color: '#888' }}>값을 입력하세요.</div>
+          <div style={{ color: '#888' }}>Please enter a value.</div>
         ) : result == null ? null : result.ok ? (
           <div>
             <div style={{ marginBottom: 8, color: '#444' }}>type: {result.type}</div>
@@ -92,7 +92,7 @@ export default function Nip19Decoder() {
             </div>
           </div>
         ) : (
-          <div style={{ color: '#c33' }}>오류: {result.error}</div>
+          <div style={{ color: '#c33' }}>Error: {result.error}</div>
         )}
       </div>
     </div>
