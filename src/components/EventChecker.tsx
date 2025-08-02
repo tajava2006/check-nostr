@@ -523,11 +523,12 @@ export default function EventChecker() {
                   display: 'grid',
                   gridTemplateColumns: '64px 1fr',
                   gap: 12,
-                  alignItems: 'center',
+                  alignItems: 'start',
                   background: '#fafafa',
                   border: '1px solid #eee',
                   borderRadius: 8,
                   padding: 12,
+                  textAlign: 'left',
                 }}
               >
                 <div>
