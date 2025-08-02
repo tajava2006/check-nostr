@@ -70,6 +70,9 @@ export default function EventChecker() {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [profileRelay, setProfileRelay] = useState<string | null>(null)
 
+  // 전체 결과 중 첫 번째로 수신한 이벤트(raw)를 별도로 보관하여 단일 위치에서 표시
+  const [firstEvent, setFirstEvent] = useState<Event | null>(null)
+
   // 상태 맵
   const [states, setStates] = useState<Record<string, RelayState>>({})
   const poolRef = useRef<SimplePool | null>(null)
@@ -121,6 +124,8 @@ export default function EventChecker() {
       setProfile(null)
       setProfileRelay(null)
     }
+    // 이벤트가 바뀌면 단일 raw 이벤트도 초기화
+    setFirstEvent(null)
   }, [normalizedId])
 
   // Pool 라이프사이클
@@ -241,6 +246,8 @@ export default function EventChecker() {
                   ...s,
                   [relayUrl]: { ...(s[relayUrl] as RelayState), hasEvent: true, event: ev },
                 }))
+                // 전체 중 첫 번째로 수신한 이벤트를 보관하여 상단에 단 한 번만 표시
+                setFirstEvent((prev) => prev ?? ev)
                 // 이벤트 author를 자동 세팅(이미 사용자가 직접 입력했다면 유지)
                 setAuthorHex((prev) => prev || ev.pubkey)
                 try { sub.close() } catch { /* ignore */ }
@@ -623,27 +630,6 @@ export default function EventChecker() {
                         </div>
                         {st.error && <div style={{ color: '#c33' }}>에러: {st.error}</div>}
                       </div>
-
-                      {st.event && (
-                        <pre
-                          style={{
-                            marginTop: 8,
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word',
-                            background: '#f7f7f7',
-                            padding: '12px',
-                            borderRadius: 8,
-                            border: '1px solid #eee',
-                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                            fontSize: 12,
-                            maxHeight: 320,
-                            overflowY: 'auto',
-                            textAlign: 'left',
-                          }}
-                        >
-{JSON.stringify(st.event, null, 2)}
-                        </pre>
-                      )}
                     </div>
                   )}
                 </div>
@@ -652,6 +638,26 @@ export default function EventChecker() {
           </div>
         </div>
       </div>
+
+      {/* 단일 Raw Event 표시(첫 수신 이벤트) */}
+      {firstEvent && (
+        <div
+          style={{
+            marginTop: 16,
+            background: '#f7f7f7',
+            padding: '12px',
+            borderRadius: 8,
+            border: '1px solid #eee',
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+            fontSize: 12,
+            maxHeight: 360,
+            overflowY: 'auto',
+            textAlign: 'left',
+          }}
+        >
+{JSON.stringify(firstEvent, null, 2)}
+        </div>
+      )}
     </div>
   )
 }
