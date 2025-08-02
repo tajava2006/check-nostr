@@ -10,18 +10,27 @@ function normalizeId(s: string): string {
   return s.trim().toLowerCase().replace(/^0x/, '')
 }
 function normalizeRelayUrl(url: string): string {
-  const u = url.trim()
+  let u = url.trim()
   if (!u) return ''
-  // 기본 프로토콜 보정: wss://를 붙여줌
-  if (!/^wss?:\/\//i.test(u)) return `wss://${u}`
-  return u
+  // nostr-tools 이벤트 태그에 스킴/슬래시가 부족한 경우를 보정
+  if (!/^wss?:\/\//i.test(u)) u = `wss://${u}`
+  try {
+    const parsed = new URL(u)
+    // trailing slash 제거 및 소문자 호스트 정규화
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '')
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname || ''}`
+  } catch {
+    // URL 파싱 실패 시 기본 치환만 적용
+    return u.replace(/\/+$/, '')
+  }
 }
 
 function uniq(arr: string[]): string[] {
   const seen = new Set<string>()
   const out: string[] = []
   for (const x of arr) {
-    const nx = x.replace(/\/+$/, '')
+    const nx = normalizeRelayUrl(x)
+    if (!nx) continue
     if (!seen.has(nx)) {
       seen.add(nx)
       out.push(nx)
@@ -309,6 +318,9 @@ export default function EventChecker() {
   const triggerQuery = () => setQueryKey((k) => k + 1)
 
   // authorHex가 유효하면 프로필(kind 0)과 nip65(kind 10002) 조회
+  // - SimplePool을 사용하여 현재 소스 릴레이 세트에서 교체형 이벤트의 최신값만 가져온다.
+  // - NIP-65 태그에서 perm 미지정(없음)은 read/write 모두 가능으로 해석하므로 포함한다.
+  // - 렌더 루프를 막기 위해 relays가 변경될 때만 setRelays를 호출하고, 불필요한 queryKey 증가는 하지 않는다.
   useEffect(() => {
     const pk = authorHex.trim().toLowerCase().replace(/^0x/, '')
     const valid = /^[0-9a-f]{64}$/.test(pk)
@@ -319,80 +331,92 @@ export default function EventChecker() {
     }
 
     let cancelled = false
+    // 프로필/아웃박스 조회용 릴레이 선택: 입력된 릴레이 우선, 없으면 기본 릴레이
+    const sources = normalizedRelays.length ? normalizedRelays : [...DEFAULT_RELAYS]
 
     ;(async () => {
-      // 프로필/아웃박스 조회용 릴레이 선택: 입력된 릴레이 우선, 없으면 기본 릴레이
-      const sources = normalizedRelays.length ? normalizedRelays : [...DEFAULT_RELAYS]
-
-      // 1) kind 0 프로필 조회
+      // 1) kind 0 프로필: 최신 하나를 각 릴레이에서 시도하되, 최초 성공만 반영
       try {
+        let profileSet = false
         for (const url of sources) {
-          if (cancelled) break
+          if (cancelled || profileSet) break
           try {
             const r = await Relay.connect(url)
-            const sub = r.subscribe([{ kinds: [0], authors: [pk], limit: 1 }], {
-              onevent(ev) {
-                if (cancelled) return
-                if (ev.kind === 0) {
-                  try {
-                    const parsed = JSON.parse(ev.content)
-                    setProfile({ pubkey: pk, ...parsed })
+            await new Promise<void>((resolve) => {
+              const sub = r.subscribe([{ kinds: [0], authors: [pk], limit: 1 }], {
+                onevent(ev) {
+                  if (cancelled || profileSet) return
+                  if (ev.kind === 0) {
+                    try {
+                      const parsed = JSON.parse(ev.content)
+                      setProfile({ pubkey: pk, ...parsed })
+                    } catch {
+                      setProfile({ pubkey: pk })
+                    }
                     setProfileRelay(url)
-                  } catch {
-                    setProfile({ pubkey: pk })
-                    setProfileRelay(url)
+                    profileSet = true
                   }
+                },
+                oneose() {
+                  try { sub.close() } catch { /* noop */ }
+                  try { r.close() } catch { /* noop */ }
+                  resolve()
                 }
-              },
-              oneose() {
-                try { sub.close() } catch {}
-                try { r.close() } catch {}
-              }
+              })
             })
           } catch {
-            // skip failed relay
+            // skip
           }
         }
       } catch {
         // ignore
       }
 
-      // 2) kind 10002 NIP-65(아웃박스) 조회 → write 릴레이만 추출해서 목록에 추가(중복 제거)
+      // 2) kind 10002 NIP-65(아웃박스): 최신 하나 → write 가능한 릴레이들 추가
       try {
-        const newWriteRelays: string[] = []
+        let outboxHandled = false
         for (const url of sources) {
-          if (cancelled) break
+          if (cancelled || outboxHandled) break
           try {
             const r = await Relay.connect(url)
-            const sub = r.subscribe([{ kinds: [10002], authors: [pk], limit: 1 }], {
-              onevent(ev) {
-                if (cancelled) return
-                if (ev.kind === 10002 && Array.isArray(ev.tags)) {
-                  for (const t of ev.tags) {
-                    // 표준 태그: ["r", "<relay url>", "write" | "read" | ...]
-                    if (t[0] === 'r' && t[1]) {
-                      const relayUrl = normalizeRelayUrl(String(t[1]))
-                      const perm = (t[2] || '').toLowerCase()
-                      if (perm === 'write') {
-                        newWriteRelays.push(relayUrl)
+            await new Promise<void>((resolve) => {
+              const sub = r.subscribe([{ kinds: [10002], authors: [pk], limit: 1 }], {
+                onevent(ev) {
+                  if (cancelled || outboxHandled) return
+                  if (ev.kind === 10002) {
+                    const candidates: string[] = []
+                    for (const t of ev.tags || []) {
+                      const tag0 = (t[0] || '').toString().toLowerCase().trim()
+                      const tag1 = (t[1] || '').toString().trim()
+                      const perm = ((t[2] || '') as string).toLowerCase().trim()
+                      if ((tag0 === 'r' || tag0 === 'relay') && tag1) {
+                        const relayUrl = normalizeRelayUrl(tag1)
+                        if (!relayUrl) continue
+                        // 표준: perm 없으면 read/write 모두 허용 → 포함
+                        if (perm === '' || perm === 'write' || perm === 'w') {
+                          candidates.push(relayUrl)
+                        }
                       }
                     }
+                    if (candidates.length) {
+                      const toAdd = uniq(candidates)
+                      setRelays((prev) => {
+                        const merged = uniq([...prev, ...toAdd])
+                        return merged.length !== prev.length ? merged : prev
+                      })
+                    }
+                    outboxHandled = true
                   }
+                },
+                oneose() {
+                  try { sub.close() } catch { /* noop */ }
+                  try { r.close() } catch { /* noop */ }
+                  resolve()
                 }
-              },
-              oneose() {
-                try { sub.close() } catch {}
-                try { r.close() } catch {}
-              }
+              })
             })
           } catch {
-            // skip failed relay
-          }
-        }
-        if (!cancelled && newWriteRelays.length) {
-          const merged = uniq([...normalizedRelays, ...newWriteRelays])
-          if (merged.length !== normalizedRelays.length) {
-            setRelays(merged)
+            // skip
           }
         }
       } catch {
