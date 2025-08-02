@@ -758,28 +758,36 @@ export default function EventChecker() {
                     <div style={{ flex: '0 0 auto', display: 'inline-flex' }}>
                       <button
                         onClick={() => publishToRelay(url)}
-                        disabled={!isValidId || (st && st.publishStatus === 'publishing')}
+                        disabled={
+                          !isValidId ||
+                          (st && st.publishStatus === 'publishing') ||
+                          (st && st.hasEvent === true)
+                        }
                         style={{
                           padding: '6px 10px',
                           borderRadius: 6,
                           border: '1px solid #ccc',
                           background:
-                            st && st.publishStatus === 'publishing' ? '#f3f3f3' : '#fff',
+                            st && (st.publishStatus === 'publishing' || st.hasEvent === true)
+                              ? '#f3f3f3'
+                              : '#fff',
                           color: '#222',
                           cursor:
-                            st && st.publishStatus === 'publishing' ? 'not-allowed' : 'pointer',
+                            st && (st.publishStatus === 'publishing' || st.hasEvent === true)
+                              ? 'not-allowed'
+                              : 'pointer',
                           display: 'inline-block',
                           visibility: 'visible',
                           zIndex: 1
                         }}
                         title={
-                          st && st.publishStatus === 'publishing'
-                            ? '퍼블리시 중...'
+                          st && (st.publishStatus === 'publishing' || st.hasEvent === true)
+                            ? (st.hasEvent === true ? '이미 존재함' : '퍼블리시 중...')
                             : '이 이벤트를 이 릴레이에 퍼블리시'
                         }
                         aria-label="publish to relay"
                       >
-                        {(st && st.publishStatus === 'publishing') ? '퍼블리시 중...' : '퍼블리시'}
+                        {st && st.publishStatus === 'publishing' ? '퍼블리시 중...' : '퍼블리시'}
                       </button>
                     </div>
                     <button
