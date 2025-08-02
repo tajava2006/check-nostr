@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Relay, type Event, type Filter, SimplePool } from 'nostr-tools'
+import { Relay, type Event, type Filter, SimplePool, nip19 } from 'nostr-tools'
 
 // 유틸
 function isHex32(s: string): boolean {
@@ -36,7 +36,39 @@ export default function EventChecker() {
   const [states, setStates] = useState<Record<string, RelayState>>({})
   const poolRef = useRef<SimplePool | null>(null)
 
-  const normalizedId = useMemo(() => normalizeId(eventIdInput), [eventIdInput])
+  // 입력이 hex 64이거나 NIP-19(nevent/npub/nprofile/naddr 등)이면 id를 추출
+  const normalizedId = useMemo(() => {
+    const raw = eventIdInput.trim()
+    if (!raw) return ''
+    // 1) hex 64 바로 허용
+    const hex = normalizeId(raw)
+    if (isHex32(hex)) return hex
+    // 2) NIP-19 디코딩 시도
+    try {
+      const { type, data } = nip19.decode(raw)
+      // nevent: { id, author?, relays?, kind? }
+      if (
+        type === 'nevent' &&
+        typeof data === 'object' &&
+        data &&
+        'id' in (data as Record<string, unknown>)
+      ) {
+        const id = String((data as Record<string, unknown>).id)
+        return normalizeId(id)
+      }
+      // note: 이벤트 id 직접 인코딩된 케이스
+      if (type === 'note' && typeof data === 'string') {
+        return normalizeId(data)
+      }
+      // naddr는 식별자가 event id와는 다르므로 여기서는 조회 대상이 아님(확장 시 kind/tag 기반 조회 가능)
+      // nnote는 일부 툴에서 쓰는 별칭일 수 있어 note가 아니면 통과
+      // 그 외 타입은 여기서는 사용하지 않음
+    } catch {
+      // 디코드 실패 시 무시
+    }
+    return ''
+  }, [eventIdInput])
+
   const isValidId = useMemo(() => isHex32(normalizedId), [normalizedId])
   const normalizedRelays = useMemo(
     () => relays.map((r) => normalizeRelayUrl(r)).filter(Boolean),
@@ -61,6 +93,7 @@ export default function EventChecker() {
   // 상태 초기화
   // - 기존 결과는 최대한 보존한다(이미 조회 완료된 릴레이의 결과가 새 릴레이 추가/수정으로 사라지지 않도록 함).
   // - 새로 추가된 릴레이만 기본 상태로 추가.
+  // - 이벤트(ID)가 바뀌면 모든 릴레이의 결과를 초기화하여 새 이벤트 기준으로 재조회되도록 함.
   useEffect(() => {
     setStates((prev) => {
       const next: Record<string, RelayState> = { ...prev }
@@ -84,6 +117,25 @@ export default function EventChecker() {
       return next
     })
   }, [normalizedRelays])
+
+  // 이벤트가 바뀌면 기존 각 릴레이의 조회 결과를 초기화하고 재조회 트리거
+  useEffect(() => {
+    setStates(() => {
+      const next: Record<string, RelayState> = {}
+      for (const r of normalizedRelays) {
+        next[r] = {
+          url: r,
+          normalized: r,
+          status: 'idle',
+          hasEvent: null,
+          event: null,
+        }
+      }
+      return next
+    })
+    // 유효한 id면 자동으로 재조회 트리거(수동 조회만 원하면 아래 줄 제거 가능)
+    setQueryKey((k) => k + 1)
+  }, [normalizedId])
 
   // 개별 릴레이 연결 상태 추적 + 이벤트 조회(단발성)
   // - 이미 결과가 확정된 릴레이(connected+hasEvent !== null)는 다시 조회하지 않음(기존 표시 유지).
@@ -363,7 +415,7 @@ export default function EventChecker() {
                           style={{
                             marginTop: 8,
                             whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-all',
+                            wordBreak: 'break-word',
                             background: '#f7f7f7',
                             padding: '12px',
                             borderRadius: 8,
@@ -371,7 +423,8 @@ export default function EventChecker() {
                             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
                             fontSize: 12,
                             maxHeight: 320,
-                            overflow: 'auto',
+                            overflowY: 'auto',
+                            textAlign: 'left',
                           }}
                         >
 {JSON.stringify(st.event, null, 2)}
