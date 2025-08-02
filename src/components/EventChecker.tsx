@@ -59,38 +59,58 @@ export default function EventChecker() {
   }, []) // 최초 1회
 
   // 상태 초기화
+  // - 기존 결과는 최대한 보존한다(이미 조회 완료된 릴레이의 결과가 새 릴레이 추가/수정으로 사라지지 않도록 함).
+  // - 새로 추가된 릴레이만 기본 상태로 추가.
   useEffect(() => {
-    const init: Record<string, RelayState> = {}
-    for (const r of normalizedRelays) {
-      init[r] = {
-        url: r,
-        normalized: r,
-        status: 'idle',
-        hasEvent: null,
-        event: null,
+    setStates((prev) => {
+      const next: Record<string, RelayState> = { ...prev }
+      for (const r of normalizedRelays) {
+        if (!next[r]) {
+          next[r] = {
+            url: r,
+            normalized: r,
+            status: 'idle',
+            hasEvent: null,
+            event: null,
+          }
+        }
       }
-    }
-    setStates(init)
-  }, [normalizedRelays, queryKey])
+      // 입력에서 제거된 릴레이는 상태에서도 제거
+      for (const key of Object.keys(next)) {
+        if (!normalizedRelays.includes(key)) {
+          delete next[key]
+        }
+      }
+      return next
+    })
+  }, [normalizedRelays])
 
-  // 개별 릴레이 연결 상태 추적 + 이벤트 조회
+  // 개별 릴레이 연결 상태 추적 + 이벤트 조회(단발성)
+  // - 이미 결과가 확정된 릴레이(connected+hasEvent !== null)는 다시 조회하지 않음(기존 표시 유지).
   useEffect(() => {
     if (!poolRef.current) return
-    // 현재는 Relay.connect를 개별로 사용. 필요 시 pool.get/subscribe로 리팩토링 가능.
-    // const pool = poolRef.current
-
     if (!isValidId || normalizedRelays.length === 0) return
 
     const targetId = normalizedId
-
-    // 각 릴레이별로 확인
     const aborters: Array<() => void> = []
 
     normalizedRelays.forEach((relayUrl) => {
-      // 연결 상태 추적을 위해 직접 Relay 인스턴스도 사용
+      const st = states[relayUrl]
+      const alreadyDone =
+        st && (st.hasEvent !== null || st.status === 'error' || st.status === 'closed')
+      if (alreadyDone) {
+        // 이미 조회가 끝난 릴레이는 스킵하여 기존 raw 데이터가 사라지지 않게 함
+        return
+      }
+
+      // 조회 시작
       setStates((s) => ({
         ...s,
-        [relayUrl]: { ...(s[relayUrl] ?? { url: relayUrl, normalized: relayUrl } as RelayState), status: 'connecting', hasEvent: null, event: null, error: undefined },
+        [relayUrl]: {
+          ...(s[relayUrl] ?? { url: relayUrl, normalized: relayUrl } as RelayState),
+          status: 'connecting',
+          error: undefined,
+        },
       }))
 
       let relay: Relay | null = null
@@ -100,9 +120,7 @@ export default function EventChecker() {
         try {
           relay = await Relay.connect(relayUrl)
           if (closed) {
-            try { relay.close() } catch {
-              // ignore
-            }
+            try { relay.close() } catch { /* ignore */ }
             return
           }
           setStates((s) => ({
@@ -110,44 +128,41 @@ export default function EventChecker() {
             [relayUrl]: { ...(s[relayUrl] as RelayState), status: 'open' },
           }))
 
-          // 이벤트 조회
+          // 이벤트 조회: 단발(subscribe 후 EOSE 또는 첫 이벤트 수신 시 즉시 종료)
           const filter: Filter = { ids: [targetId] }
-          let got: Event | null = null
+          let done = false
 
-          // 개별 릴레이에 대해 단발성 쿼리
-          // Relay API 직접 사용: sub/unsub
-          const sub = relay.subscribe([filter], {
+          const sub = relay!.subscribe([filter], {
             onevent(ev) {
-              if (closed) return
+              if (closed || done) return
               if (ev.id === targetId) {
-                got = ev
+                done = true
                 setStates((s) => ({
                   ...s,
                   [relayUrl]: { ...(s[relayUrl] as RelayState), hasEvent: true, event: ev },
                 }))
+                try { sub.close() } catch { /* ignore */ }
+                try { relay!.close() } catch { /* ignore */ }
               }
             },
             oneose() {
-              if (closed) return
-              if (!got) {
-                setStates((s) => ({
-                  ...s,
-                  [relayUrl]: { ...(s[relayUrl] as RelayState), hasEvent: false, event: null },
-                }))
-              }
-              try {
-                sub.close()
-              } catch {
-                // ignore
-              }
+              if (closed || done) return
+              done = true
+              setStates((s) => ({
+                ...s,
+                [relayUrl]: { ...(s[relayUrl] as RelayState), hasEvent: false, event: null },
+              }))
+              try { sub.close() } catch { /* ignore */ }
+              try { relay!.close() } catch { /* ignore */ }
             },
           })
+
           aborters.push(() => {
-            try {
-              sub.close()
-            } catch {
-              // ignore
+            try { sub.close() } catch { /* ignore */ }
+            if (relay) {
+              try { relay.close() } catch { /* ignore */ }
             }
+            closed = true
           })
         } catch (e: unknown) {
           setStates((s) => ({
@@ -156,28 +171,20 @@ export default function EventChecker() {
               ...(s[relayUrl] ?? { url: relayUrl, normalized: relayUrl } as RelayState),
               status: 'error',
               error: e instanceof Error ? e.message : String(e),
-              hasEvent: null,
-              event: null,
+              // 에러 시 이전 성공 데이터가 있었다면 보존, 없었다면 null 유지
+              hasEvent: s[relayUrl]?.hasEvent ?? null,
+              event: s[relayUrl]?.event ?? null,
             },
           }))
         }
       })()
-
-      aborters.push(() => {
-        closed = true
-        if (relay) {
-          try {
-            relay.close()
-          } catch {
-            // ignore
-          }
-        }
-      })
     })
 
     return () => {
       aborters.forEach((fn) => fn())
     }
+    // states는 내부적으로 확인용으로만 읽고 setStates로 갱신하므로 의존성에서 제외
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isValidId, normalizedId, normalizedRelays, queryKey])
 
   const addRelay = () => {
