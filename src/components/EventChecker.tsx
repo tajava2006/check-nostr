@@ -17,13 +17,17 @@ function normalizeRelayUrl(url: string): string {
   return u
 }
 
-type RelayState = {
-  url: string
-  normalized: string
-  status: 'idle' | 'connecting' | 'open' | 'error' | 'closed'
-  hasEvent: boolean | null
-  event: Event | null
-  error?: string
+function uniq(arr: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const x of arr) {
+    const nx = x.replace(/\/+$/, '')
+    if (!seen.has(nx)) {
+      seen.add(nx)
+      out.push(nx)
+    }
+  }
+  return out
 }
 
 const DEFAULT_RELAYS = [
@@ -34,11 +38,37 @@ const DEFAULT_RELAYS = [
   'wss://relay.primal.net',
 ] as const
 
+type RelayState = {
+  url: string
+  normalized: string
+  status: 'idle' | 'connecting' | 'open' | 'error' | 'closed'
+  hasEvent: boolean | null
+  event: Event | null
+  error?: string
+}
+
 export default function EventChecker() {
   const [eventIdInput, setEventIdInput] = useState('')
   const [relays, setRelays] = useState<string[]>([...DEFAULT_RELAYS])
   const [queryKey, setQueryKey] = useState(0) // 재조회 트리거용
   const [autoQuery, setAutoQuery] = useState(true)
+
+  // author/pubkey 및 프로필 상태
+  const [authorHex, setAuthorHex] = useState<string>('') // 자동 채움 후 사용자가 수정 가능
+  type Profile = {
+    pubkey: string
+    name?: string
+    display_name?: string
+    about?: string
+    picture?: string
+    banner?: string
+    lud16?: string
+    lud06?: string
+    website?: string
+    nip05?: string
+  }
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [profileRelay, setProfileRelay] = useState<string | null>(null)
 
   // 상태 맵
   const [states, setStates] = useState<Record<string, RelayState>>({})
@@ -82,6 +112,16 @@ export default function EventChecker() {
     () => relays.map((r) => normalizeRelayUrl(r)).filter(Boolean),
     [relays],
   )
+
+  // 이벤트 변경 시 author 초기화(입력에 의해 덮어쓸 수 있음)
+  useEffect(() => {
+    // 이벤트가 지워졌다면 author도 리셋
+    if (!normalizedId) {
+      setAuthorHex('')
+      setProfile(null)
+      setProfileRelay(null)
+    }
+  }, [normalizedId])
 
   // Pool 라이프사이클
   useEffect(() => {
@@ -201,6 +241,8 @@ export default function EventChecker() {
                   ...s,
                   [relayUrl]: { ...(s[relayUrl] as RelayState), hasEvent: true, event: ev },
                 }))
+                // 이벤트 author를 자동 세팅(이미 사용자가 직접 입력했다면 유지)
+                setAuthorHex((prev) => prev || ev.pubkey)
                 try { sub.close() } catch { /* ignore */ }
                 try { relay!.close() } catch { /* ignore */ }
               }
@@ -259,6 +301,103 @@ export default function EventChecker() {
 
   const triggerQuery = () => setQueryKey((k) => k + 1)
 
+  // authorHex가 유효하면 프로필(kind 0)과 nip65(kind 10002) 조회
+  useEffect(() => {
+    const pk = authorHex.trim().toLowerCase().replace(/^0x/, '')
+    const valid = /^[0-9a-f]{64}$/.test(pk)
+    if (!valid) {
+      setProfile(null)
+      setProfileRelay(null)
+      return
+    }
+
+    let cancelled = false
+
+    ;(async () => {
+      // 프로필/아웃박스 조회용 릴레이 선택: 입력된 릴레이 우선, 없으면 기본 릴레이
+      const sources = normalizedRelays.length ? normalizedRelays : [...DEFAULT_RELAYS]
+
+      // 1) kind 0 프로필 조회
+      try {
+        for (const url of sources) {
+          if (cancelled) break
+          try {
+            const r = await Relay.connect(url)
+            const sub = r.subscribe([{ kinds: [0], authors: [pk], limit: 1 }], {
+              onevent(ev) {
+                if (cancelled) return
+                if (ev.kind === 0) {
+                  try {
+                    const parsed = JSON.parse(ev.content)
+                    setProfile({ pubkey: pk, ...parsed })
+                    setProfileRelay(url)
+                  } catch {
+                    setProfile({ pubkey: pk })
+                    setProfileRelay(url)
+                  }
+                }
+              },
+              oneose() {
+                try { sub.close() } catch {}
+                try { r.close() } catch {}
+              }
+            })
+          } catch {
+            // skip failed relay
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      // 2) kind 10002 NIP-65(아웃박스) 조회 → write 릴레이만 추출해서 목록에 추가(중복 제거)
+      try {
+        const newWriteRelays: string[] = []
+        for (const url of sources) {
+          if (cancelled) break
+          try {
+            const r = await Relay.connect(url)
+            const sub = r.subscribe([{ kinds: [10002], authors: [pk], limit: 1 }], {
+              onevent(ev) {
+                if (cancelled) return
+                if (ev.kind === 10002 && Array.isArray(ev.tags)) {
+                  for (const t of ev.tags) {
+                    // 표준 태그: ["r", "<relay url>", "write" | "read" | ...]
+                    if (t[0] === 'r' && t[1]) {
+                      const relayUrl = normalizeRelayUrl(String(t[1]))
+                      const perm = (t[2] || '').toLowerCase()
+                      if (perm === 'write') {
+                        newWriteRelays.push(relayUrl)
+                      }
+                    }
+                  }
+                }
+              },
+              oneose() {
+                try { sub.close() } catch {}
+                try { r.close() } catch {}
+              }
+            })
+          } catch {
+            // skip failed relay
+          }
+        }
+        if (!cancelled && newWriteRelays.length) {
+          const merged = uniq([...normalizedRelays, ...newWriteRelays])
+          if (merged.length !== normalizedRelays.length) {
+            setRelays(merged)
+          }
+        }
+      } catch {
+        // ignore
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [authorHex, normalizedRelays])
+
   useEffect(() => {
     if (autoQuery) {
       const t = setTimeout(() => {
@@ -279,11 +418,11 @@ export default function EventChecker() {
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <div>
-          <div style={{ marginBottom: 8, color: '#444' }}>이벤트 ID (hex 64)</div>
+          <div style={{ marginBottom: 8, color: '#444' }}>이벤트 ID (hex 64 또는 nevent/note)</div>
           <input
             value={eventIdInput}
             onChange={(e) => setEventIdInput(e.target.value)}
-            placeholder="예) e3a1... (64 hex)"
+            placeholder="예) e3a1... 또는 nevent1..."
             spellCheck={false}
             style={{
               width: '100%',
@@ -296,31 +435,98 @@ export default function EventChecker() {
             }}
           />
           {!isValidId && eventIdInput && (
-            <div style={{ color: '#c33', marginTop: 6 }}>유효한 64자리 hex가 아닙니다.</div>
+            <div style={{ color: '#c33', marginTop: 6 }}>유효한 이벤트 ID가 아닙니다.</div>
           )}
 
-          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <input
-                type="checkbox"
-                checked={autoQuery}
-                onChange={(e) => setAutoQuery(e.target.checked)}
-              />
-              자동 조회
-            </label>
-            <button
-              onClick={triggerQuery}
-              disabled={!isValidId}
+          <div style={{ marginTop: 12 }}>
+            <div style={{ marginBottom: 6, color: '#444' }}>작성자(pubkey, hex 64)</div>
+            <input
+              value={authorHex}
+              onChange={(e) => setAuthorHex(e.target.value)}
+              placeholder="예) 작성자 공개키(hex 64). 이벤트 지정 시 자동 채워짐"
+              spellCheck={false}
               style={{
-                padding: '8px 12px',
-                borderRadius: 6,
-                border: '1px solid #ccc',
-                background: isValidId ? '#fff' : '#f3f3f3',
-                cursor: isValidId ? 'pointer' : 'not-allowed',
+                width: '100%',
+                padding: '10px 12px',
+                fontSize: 14,
+                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                border: /^[0-9a-f]{64}$/i.test(authorHex.trim()) || !authorHex ? '1px solid #ccc' : '1px solid #c33',
+                borderRadius: 8,
+                outline: 'none',
               }}
-            >
-              조회
-            </button>
+            />
+            {profile && (
+              <div
+                style={{
+                  marginTop: 12,
+                  display: 'grid',
+                  gridTemplateColumns: '64px 1fr',
+                  gap: 12,
+                  alignItems: 'center',
+                  background: '#fafafa',
+                  border: '1px solid #eee',
+                  borderRadius: 8,
+                  padding: 12,
+                }}
+              >
+                <div>
+                  {profile.picture ? (
+                    <img
+                      src={profile.picture}
+                      alt="avatar"
+                      style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover', border: '1px solid #ddd' }}
+                    />
+                  ) : (
+                    <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#eaeaea', border: '1px solid #ddd' }} />
+                  )}
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600 }}>
+                    {profile.display_name || profile.name || '(no name)'}
+                  </div>
+                  {profile.about && (
+                    <div style={{ color: '#555', marginTop: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                      {profile.about}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8, color: '#444', fontSize: 12 }}>
+                    {profile.lud16 && <span>⚡ {profile.lud16}</span>}
+                    {profile.lud06 && <span>⚡ LNURL</span>}
+                    {profile.nip05 && <span>✓ {profile.nip05}</span>}
+                    {profile.website && (
+                      <a href={profile.website} target="_blank" rel="noreferrer" style={{ color: '#3366cc' }}>
+                        website
+                      </a>
+                    )}
+                    {profileRelay && <span style={{ color: '#777' }}>from: {profileRelay}</span>}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={autoQuery}
+                  onChange={(e) => setAutoQuery(e.target.checked)}
+                />
+                자동 조회
+              </label>
+              <button
+                onClick={triggerQuery}
+                disabled={!isValidId}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  border: '1px solid #ccc',
+                  background: isValidId ? '#fff' : '#f3f3f3',
+                  cursor: isValidId ? 'pointer' : 'not-allowed',
+                }}
+              >
+                조회
+              </button>
+            </div>
           </div>
         </div>
 
