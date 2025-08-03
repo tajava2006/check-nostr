@@ -60,7 +60,7 @@ function detectAndEncode(hexInput: string): EncodeItem[] | { error: string } {
     }
     // nevent (event object - encode with minimal fields like id)
     try {
-      const nevent = nip19.neventEncode({ id: hex } as { id: string; relays?: string[]; author?: string; kind?: number })
+      const nevent = nip19.neventEncode({ id: hex })
       out.push({ label: 'nevent (event, id only)', value: nevent })
     } catch {
       /* ignore */
@@ -119,7 +119,7 @@ export default function HexToNip19() {
 
       <div style={{ marginTop: 20 }}>
         {!input ? (
-          <div style={{ color: '#888' }}>Please enter a value.</div>
+          ''
         ) : result == null ? null : Array.isArray(result) ? (
           <div
             style={{

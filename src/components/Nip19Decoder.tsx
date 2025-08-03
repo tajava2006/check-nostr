@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react'
 import { nip19 } from 'nostr-tools'
+import type { DecodedResult } from 'nostr-tools/nip19';
+import { bytesToHex } from 'nostr-tools/utils';
 
 type DecodeResult =
   | { ok: true; type: string; hex: string }
@@ -10,33 +12,29 @@ function decodeNip19(input: string): DecodeResult {
     const trimmed = input.trim()
     if (!trimmed) return { ok: false, error: 'Please enter a value.' }
 
-    const { type, data } = nip19.decode(trimmed)
+    const decoded = nip19.decode(trimmed)
 
-    const toHex = (v: unknown): string => {
-      if (typeof v === 'string') {
-        return v.toLowerCase()
+    const toHex = (decoded: DecodedResult) => {
+      switch(decoded.type) {
+        case 'nprofile':
+          return decoded.data.pubkey
+        case 'nevent':
+          return decoded.data.id
+        case 'naddr':
+          return `${decoded.data.pubkey}-${decoded.data.kind}`
+        case 'nsec':
+          return bytesToHex(decoded.data)
+        case 'npub':
+          return decoded.data
+        case 'note':
+          return decoded.data
+        default:
+          return ''
       }
-      if (v instanceof Uint8Array) {
-        return Array.from(v)
-          .map((b) => b.toString(16).padStart(2, '0'))
-          .join('')
-      }
-      if (Array.isArray(v)) {
-        return (v as number[])
-          .map((b) => Number(b).toString(16).padStart(2, '0'))
-          .join('')
-      }
-      if (type === 'nprofile' && typeof v === 'object' && v && 'pubkey' in (v as Record<string, unknown>)) {
-        return String((v as Record<string, unknown>).pubkey).toLowerCase()
-      }
-      if (type === 'nevent' && typeof v === 'object' && v && 'id' in (v as Record<string, unknown>)) {
-        return String((v as Record<string, unknown>).id).toLowerCase()
-      }
-      throw new Error('Cannot decode original hex for this type.')
     }
 
-    const hex = toHex(data)
-    return { ok: true, type, hex }
+    const hex = toHex(decoded)
+    return { ok: true, type: decoded.type, hex }
   } catch (e: unknown) {
     const msg =
       e instanceof Error ? e.message : typeof e === 'string' ? e : 'An error occurred while decoding.'
@@ -73,7 +71,7 @@ export default function Nip19Decoder() {
 
       <div style={{ marginTop: 20 }}>
         {!input ? (
-          <div style={{ color: '#888' }}>Please enter a value.</div>
+          ''
         ) : result == null ? null : result.ok ? (
           <div>
             <div style={{ marginBottom: 8, color: '#444' }}>type: {result.type}</div>
