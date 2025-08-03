@@ -1,3 +1,4 @@
+import { type Event } from 'nostr-tools'
 
 export type EncodeItem = {
   label: string
