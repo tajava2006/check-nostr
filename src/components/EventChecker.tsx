@@ -1,43 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Relay, type Event, type Filter, SimplePool, nip19 } from 'nostr-tools'
-
-/* Utils */
-function isHex32(s: string): boolean {
-  const v = s.trim().toLowerCase().replace(/^0x/, '')
-  return /^[0-9a-f]{64}$/.test(v)
-}
-function normalizeId(s: string): string {
-  return s.trim().toLowerCase().replace(/^0x/, '')
-}
-function normalizeRelayUrl(url: string): string {
-  let u = url.trim()
-  if (!u) return ''
-  // Normalize relay URL (ensure scheme and remove trailing slashes)
-  if (!/^wss?:\/\//i.test(u)) u = `wss://${u}`
-  try {
-    const parsed = new URL(u)
-    // Remove trailing slash and normalize host
-    parsed.pathname = parsed.pathname.replace(/\/+$/, '')
-    return `${parsed.protocol}//${parsed.host}${parsed.pathname || ''}`
-  } catch {
-    // Fallback if URL parsing fails
-    return u.replace(/\/+$/, '')
-  }
-}
-
-function uniq(arr: string[]): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const x of arr) {
-    const nx = normalizeRelayUrl(x)
-    if (!nx) continue
-    if (!seen.has(nx)) {
-      seen.add(nx)
-      out.push(nx)
-    }
-  }
-  return out
-}
+import type { Profile, RelayState } from '../types'
+import { isHex32, normalizeHex, normalizeRelayUrl } from '../utils'
+import StyledInput from './StyledInput'
 
 const DEFAULT_RELAYS = [
   'wss://relay.damus.io/',
@@ -47,17 +12,6 @@ const DEFAULT_RELAYS = [
   'wss://relay.primal.net',
 ] as const
 
-type RelayState = {
-  url: string
-  normalized: string
-  status: 'idle' | 'connecting' | 'open' | 'error' | 'closed'
-  hasEvent: boolean | null
-  event: Event | null
-  error?: string
-  publishStatus?: 'idle' | 'publishing' | 'success' | 'failed'
-  publishError?: string
-}
-
 export default function EventChecker() {
   const [eventIdInput, setEventIdInput] = useState('')
   const [relays, setRelays] = useState<string[]>([...DEFAULT_RELAYS])
@@ -66,18 +20,6 @@ export default function EventChecker() {
 
   // author/pubkey and profile state
   const [authorHex, setAuthorHex] = useState<string>('') // auto-filled from event, editable by user
-  type Profile = {
-    pubkey: string
-    name?: string
-    display_name?: string
-    about?: string
-    picture?: string
-    banner?: string
-    lud16?: string
-    lud06?: string
-    website?: string
-    nip05?: string
-  }
   const [profile, setProfile] = useState<Profile | null>(null)
   const [profileRelay, setProfileRelay] = useState<string | null>(null)
   const [authorError, setAuthorError] = useState<string | null>(null)
@@ -94,29 +36,19 @@ export default function EventChecker() {
     const raw = eventIdInput.trim()
     if (!raw) return ''
     // 1) accept hex 64 directly
-    const hex = normalizeId(raw)
+    const hex = normalizeHex(raw)
     if (isHex32(hex)) return hex
     // 2) try to decode NIP-19
     try {
       const { type, data } = nip19.decode(raw)
-      // nevent: { id, author?, relays?, kind? }
-      if (
-        type === 'nevent' &&
-        typeof data === 'object' &&
-        data &&
-        'id' in (data as Record<string, unknown>)
-      ) {
-        const id = String((data as Record<string, unknown>).id)
-        return normalizeId(id)
+      if (type === 'nevent') {
+        return data.id
       }
-      // note: event id directly encoded
-      if (type === 'note' && typeof data === 'string') {
-        return normalizeId(data)
+      if (type === 'note') {
+        return data
       }
-      // naddr is not the same as an event id; ignored here
-      // other types are not used in this view
     } catch {
-      // 디코드 실패 시 무시
+      // ignore
     }
     return ''
   }, [eventIdInput])
@@ -545,20 +477,10 @@ export default function EventChecker() {
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <div>
           <div style={{ marginBottom: 8, color: '#444' }}>Event ID (hex 64 or nevent/note)</div>
-          <input
+          <StyledInput
             value={eventIdInput}
             onChange={(e) => setEventIdInput(e.target.value)}
             placeholder="e.g. e3a1... or nevent1..."
-            spellCheck={false}
-            style={{
-              width: '100%',
-              padding: '12px 14px',
-              fontSize: 16,
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-              border: isValidId || !eventIdInput ? '1px solid #ccc' : '1px solid #c33',
-              borderRadius: 8,
-              outline: 'none',
-            }}
           />
           {!isValidId && eventIdInput && (
             <div style={{ color: '#c33', marginTop: 6 }}>Invalid event ID.</div>

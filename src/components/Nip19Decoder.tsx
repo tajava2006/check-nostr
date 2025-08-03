@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react'
 import { nip19 } from 'nostr-tools'
 import type { DecodedResult } from 'nostr-tools/nip19';
 import { bytesToHex } from 'nostr-tools/utils';
+import StyledInput from './StyledInput';
+import ResultBlock from './ResultBlock';
 
 type DecodeResult =
   | { ok: true; type: string; hex: string }
@@ -53,42 +55,20 @@ export default function Nip19Decoder() {
         Enter a NIP-19 bech32 (npub/nsec/note/nprofile/nevent, etc.) to see the original hex.
       </p>
 
-      <input
+      <StyledInput
         value={input}
         onChange={(e) => setInput(e.target.value)}
         placeholder="e.g. npub1..."
-        spellCheck={false}
-        style={{
-          width: '100%',
-          padding: '12px 14px',
-          fontSize: 16,
-          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-          border: '1px solid #ccc',
-          borderRadius: 8,
-          outline: 'none',
-        }}
       />
 
       <div style={{ marginTop: 20 }}>
         {!input ? (
           ''
         ) : result == null ? null : result.ok ? (
-          <div>
-            <div style={{ marginBottom: 8, color: '#444' }}>type: {result.type}</div>
-            <div
-              style={{
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-all',
-                background: '#f7f7f7',
-                padding: '12px',
-                borderRadius: 8,
-                border: '1px solid #eee',
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-              }}
-            >
-              {result.hex}
-            </div>
-          </div>
+          <ResultBlock
+            label={`type: ${result.type}`}
+            value={result.hex}
+          />
         ) : (
           <div style={{ color: '#c33' }}>Error: {result.error}</div>
         )}
