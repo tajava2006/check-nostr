@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Relay, type Event, type Filter, SimplePool, nip19 } from 'nostr-tools'
 import type { Profile, RelayState } from '../types'
-import { isHex32, normalizeHex, normalizeRelayUrl } from '../utils'
+import { isHex32, normalizeHex, normalizeRelayUrl, uniq } from '../utils'
 import StyledInput from './StyledInput'
 
 const DEFAULT_RELAYS = [
