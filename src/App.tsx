@@ -1,4 +1,3 @@
-import './App.css'
 import Nip19Decoder from './components/Nip19Decoder'
 import HexToNip19 from './components/HexToNip19'
 import EventChecker from './components/EventChecker'
