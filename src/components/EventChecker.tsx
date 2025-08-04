@@ -3,6 +3,7 @@ import { Relay, type Event, type Filter, SimplePool, nip19 } from 'nostr-tools'
 import type { Profile, RelayState } from '../types'
 import { isHex32, normalizeHex, normalizeRelayUrl, uniq } from '../utils'
 import StyledInput from './StyledInput'
+import NostrProfile from './NostrProfile'
 
 const DEFAULT_RELAYS = [
   'wss://relay.damus.io/',
@@ -21,7 +22,6 @@ export default function EventChecker() {
   // author/pubkey and profile state
   const [authorHex, setAuthorHex] = useState<string>('') // auto-filled from event, editable by user
   const [profile, setProfile] = useState<Profile | null>(null)
-  const [profileRelay, setProfileRelay] = useState<string | null>(null)
   const [authorError, setAuthorError] = useState<string | null>(null)
 
   // Keep the first received raw event to show once at the bottom
@@ -65,7 +65,6 @@ export default function EventChecker() {
     if (!normalizedId) {
       setAuthorHex('')
       setProfile(null)
-      setProfileRelay(null)
     }
     // reset firstEvent on id change
     setFirstEvent(null)
@@ -347,7 +346,6 @@ export default function EventChecker() {
     const valid = /^[0-9a-f]{64}$/.test(pk)
     if (!valid) {
       setProfile(null)
-      setProfileRelay(null)
       return
     }
 
@@ -378,7 +376,6 @@ export default function EventChecker() {
                     } catch {
                       setProfile({ pubkey: pk })
                     }
-                    setProfileRelay(url)
                     profileSet = true
                   }
                 },
@@ -476,8 +473,8 @@ export default function EventChecker() {
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <div>
-          <div style={{ marginBottom: 8, color: '#444' }}>Event ID (hex 64 or nevent/note)</div>
           <StyledInput
+            title="Event ID (hex 64 or nevent/note)"
             value={eventIdInput}
             onChange={(e) => setEventIdInput(e.target.value)}
             placeholder="e.g. e3a1... or nevent1..."
@@ -487,80 +484,18 @@ export default function EventChecker() {
           )}
 
           <div style={{ marginTop: 12 }}>
-            <div style={{ marginBottom: 6, color: '#444' }}>Author (pubkey, hex 64)</div>
-            <input
+            <StyledInput
+              title="Author (pubkey, hex 64)"
               value={authorHex}
               onChange={(e) => setAuthorHex(e.target.value)}
               placeholder="e.g. author pubkey (hex 64, npub, nprofile). Auto-filled when an event is specified."
-              spellCheck={false}
-              style={{
-                width: '100%',
-                padding: '10px 12px',
-                fontSize: 14,
-                fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-                border:
-                  (/^[0-9a-f]{64}$/i.test(authorHex.trim())) ||
-                  (() => { try { const d = nip19.decode(authorHex.trim()); return d.type === 'npub' || d.type === 'nprofile' } catch { return !authorHex } })()
-                    ? '1px solid #ccc'
-                    : '1px solid #c33',
-                borderRadius: 8,
-                outline: 'none',
-              }}
             />
             {authorError && (
               <div style={{ marginTop: 8, color: '#b00020', fontSize: 12, whiteSpace: 'pre-wrap' }}>
                 Input decoding error: {authorError}
               </div>
             )}
-            {profile && (
-              <div
-                style={{
-                  marginTop: 12,
-                  display: 'grid',
-                  gridTemplateColumns: '64px 1fr',
-                  gap: 12,
-                  alignItems: 'start',
-                  background: '#fafafa',
-                  border: '1px solid #eee',
-                  borderRadius: 8,
-                  padding: 12,
-                  textAlign: 'left',
-                }}
-              >
-                <div>
-                  {profile.picture ? (
-                    <img
-                      src={profile.picture}
-                      alt="avatar"
-                      style={{ width: 64, height: 64, borderRadius: '50%', objectFit: 'cover', border: '1px solid #ddd' }}
-                    />
-                  ) : (
-                    <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#eaeaea', border: '1px solid #ddd' }} />
-                  )}
-                </div>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 600 }}>
-                    {profile.display_name || profile.name || '(no name)'}
-                  </div>
-                  {profile.about && (
-                    <div style={{ color: '#555', marginTop: 6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                      {profile.about}
-                    </div>
-                  )}
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8, color: '#444', fontSize: 12 }}>
-                    {profile.lud16 && <span>⚡ {profile.lud16}</span>}
-                    {profile.lud06 && <span>⚡ LNURL</span>}
-                    {profile.nip05 && <span>✓ {profile.nip05}</span>}
-                    {profile.website && (
-                      <a href={profile.website} target="_blank" rel="noreferrer" style={{ color: '#3366cc' }}>
-                        website
-                      </a>
-                    )}
-                    {profileRelay && <span style={{ color: '#777' }}>from: {profileRelay}</span>}
-                  </div>
-                </div>
-              </div>
-            )}
+            <NostrProfile profile={profile} />
 
             <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

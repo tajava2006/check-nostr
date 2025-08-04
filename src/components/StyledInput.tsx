@@ -1,12 +1,19 @@
 import React, { type InputHTMLAttributes } from 'react';
 
-const StyledInput: React.FC<InputHTMLAttributes<HTMLInputElement> > = ({
+interface StyledInputProps extends InputHTMLAttributes<HTMLInputElement> {
+  title?: string;
+}
+
+const StyledInput: React.FC<StyledInputProps> = ({
+  title,
   value,
   onChange,
   placeholder,
   ...rest
 }) => {
   return (
+    <>
+      {title && <div style={{ marginBottom: 8, color: '#444' }}>{title}</div>}
     <input
       value={value}
       onChange={onChange}
@@ -22,7 +29,8 @@ const StyledInput: React.FC<InputHTMLAttributes<HTMLInputElement> > = ({
         outline: 'none',
       }}
       {...rest}
-    />
+      />
+    </>
   );
 };
 

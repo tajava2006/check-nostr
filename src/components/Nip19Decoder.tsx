@@ -51,11 +51,8 @@ export default function Nip19Decoder() {
   return (
     <div style={{ maxWidth: 720, margin: '40px auto', padding: '0 16px' }}>
       <h2 style={{ marginTop: 0 }}>NIP-19 Decoder</h2>
-      <p style={{ color: '#666' }}>
-        Enter a NIP-19 bech32 (npub/nsec/note/nprofile/nevent, etc.) to see the original hex.
-      </p>
-
       <StyledInput
+        title="Enter a NIP-19 bech32 (npub/nsec/note/nprofile/nevent, etc.) to see the original hex."
         value={input}
         onChange={(e) => setInput(e.target.value)}
         placeholder="e.g. npub1..."

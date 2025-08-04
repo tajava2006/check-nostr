@@ -77,11 +77,8 @@ export default function HexToNip19() {
   return (
     <div style={{ maxWidth: 720, margin: '40px auto', padding: '0 16px' }}>
       <h2 style={{ marginTop: 0 }}>Hex → NIP-19</h2>
-      <p style={{ color: '#666' }}>
-        Enter a 32-byte hex to see possible NIP-19 formats (npub/nsec/note/nevent/nprofile).
-      </p>
-
       <StyledInput
+        title="Enter a 32-byte hex to see possible NIP-19 formats (npub/nsec/note/nevent/nprofile)."
         value={input}
         onChange={(e) => setInput(e.target.value)}
         placeholder="e.g. 32-byte hex (pubkey/secret/event id)"
